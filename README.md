@@ -9,7 +9,7 @@ An ASP.NET Core Web API that converts numeric values between units of measuremen
 - Units accepted by full name or symbol, case-insensitively (`meter`, `m`, `METER`, `meters`)
 - Discovery endpoint listing every supported unit
 - Consistent RFC 7807 `ProblemDetails` error responses
-- Interactive API docs (OpenAPI + Scalar) in Development
+- **Swagger UI** (Swashbuckle) in Development, with category names and field descriptions
 - Health check endpoint, unit + integration tests, CI workflow
 
 ## Prerequisites
@@ -23,8 +23,10 @@ dotnet restore
 dotnet run --project src/UnitConversion.Api
 ```
 
-The API starts on **http://localhost:5080** and opens the interactive docs at
-`/scalar/v1`. The raw OpenAPI document is at `/openapi/v1.json`.
+The API starts on **http://localhost:5080** and opens **Swagger UI** at
+http://localhost:5080/swagger. The raw OpenAPI document is at `/swagger/v1/swagger.json`.
+Swagger is only enabled when `ASPNETCORE_ENVIRONMENT=Development` (the default for `dotnet run`
+with the included launch profile).
 
 ## Run the tests
 
@@ -32,11 +34,25 @@ The API starts on **http://localhost:5080** and opens the interactive docs at
 dotnet test
 ```
 
+## Using Swagger UI
+
+1. Open http://localhost:5080/swagger
+2. Expand `GET /api/v1/units`, click **Try it out** and **Execute** to see every supported unit.
+3. Expand `GET /api/v1/conversions`, click **Try it out**, pick a **Category** from the dropdown
+   (Length, Temperature, Mass, Volume, Speed), enter `From`, `To` and `Value`, then **Execute**.
+
 ## API
 
 ### Convert a value
 
 `GET /api/v1/conversions?category={category}&from={unit}&to={unit}&value={number}`
+
+| Parameter  | Description                                                                 |
+|------------|-----------------------------------------------------------------------------|
+| `category` | `Length`, `Temperature`, `Mass`, `Volume` or `Speed` (case-insensitive)     |
+| `from`     | Source unit name or symbol, e.g. `meter`, `m`, `celsius`                    |
+| `to`       | Target unit name or symbol; must be in the same category as `from`          |
+| `value`    | The number to convert                                                       |
 
 ```bash
 curl "http://localhost:5080/api/v1/conversions?category=length&from=meter&to=foot&value=10"
@@ -52,16 +68,23 @@ curl "http://localhost:5080/api/v1/conversions?category=length&from=meter&to=foo
 }
 ```
 
-| Example                                                          | Result  |
-|------------------------------------------------------------------|---------|
-| `category=temperature&from=celsius&to=fahrenheit&value=100`      | `212`   |
-| `category=temperature&from=kelvin&to=celsius&value=0`            | `-273.15` |
-| `category=mass&from=kg&to=lb&value=1`                            | `2.2046226218` |
-| `category=speed&from=mph&to=km/h&value=60`                       | `96.56064` |
+| Example                                                       | Result         |
+|---------------------------------------------------------------|----------------|
+| `category=temperature&from=celsius&to=fahrenheit&value=100`   | `212`          |
+| `category=temperature&from=kelvin&to=celsius&value=0`         | `-273.15`      |
+| `category=mass&from=kg&to=lb&value=1`                         | `2.2046226218` |
+| `category=speed&from=mph&to=km/h&value=60`                    | `96.56064`     |
 
 ### List supported units
 
 `GET /api/v1/units` or `GET /api/v1/units?category=mass`
+
+```json
+[
+  { "name": "kilogram", "symbol": "kg", "category": "Mass" },
+  { "name": "pound", "symbol": "lb", "category": "Mass" }
+]
+```
 
 ### Health
 
@@ -77,11 +100,13 @@ Invalid input returns `400 Bad Request` with a `ProblemDetails` body:
 | Missing / non-numeric `value`, bad `category` | Validation errors keyed by parameter                   |
 | Value too large to convert                    | `The value is too large to convert.`                   |
 
+Unexpected failures return `500` with a generic message; details are logged, not returned.
+
 ## Project structure
 
 ```
 src/
-  UnitConversion.Api/             HTTP layer: controllers, DTOs, error handling, startup
+  UnitConversion.Api/             HTTP layer: controllers, DTOs, error handling, Swagger, startup
   UnitConversion.Core/            Domain: models, interfaces, conversion logic (no framework deps)
   UnitConversion.Infrastructure/  Unit data source (in-memory) and DI registration
 tests/
@@ -119,19 +144,33 @@ raw arithmetic result.
 
 **Unit matching.** Name, symbol, and a simple `+s` plural are matched case-insensitively.
 Irregular plurals (`feet`, `inches`) are not matched; use the singular name or symbol.
-Symbols are only unique within a category (e.g. `m` is meters; milli- and mega- prefixes
-would need care if added).
+Symbols are only unique within a category.
 
 **Category is required.** Symbols can be ambiguous across categories, so callers state the
 category explicitly and a unit from another category is rejected. This keeps lookups
 simple and errors clear.
+
+**Swagger via Swashbuckle.** Swagger UI is provided by `Swashbuckle.AspNetCore` and is only
+mapped in Development, so API documentation isn't exposed in production by default. It was
+chosen over the built-in `Microsoft.AspNetCore.OpenApi` package because the built-in package's
+XML-comment source generator conflicted with the newer `Microsoft.OpenApi` 3.x library that
+other packages pulled in. Swashbuckle 10.x uses `Microsoft.OpenApi` 2.x and avoids the problem.
+The trade-off is one extra dependency and a package to keep current.
+
+**Enums as names, not numbers.** `JsonStringEnumConverter` is registered so Swagger shows
+`Length`, `Temperature`, ... instead of `0`, `1`, ... Query binding already accepts names
+case-insensitively, so behavior for callers is unchanged; only the documentation improves.
+
+**Field descriptions from XML comments.** `///` comments on the request model and controllers
+are included in Swagger through `IncludeXmlComments`. The call is guarded with a file-exists
+check so a missing XML file never breaks startup.
 
 **URL versioning without a package.** Routes are prefixed with `/api/v1`. It is the
 simplest approach that still leaves room for a v2; a versioning library would be worth
 adding once there is a second version.
 
 **`GET` for conversions.** The operation is a safe, idempotent read with a handful of
-scalar inputs, so a query-string `GET` is cacheable and easy to try in a browser.
+scalar inputs, so a query-string `GET` is cacheable and easy to try in a browser or Swagger.
 
 **Singleton services.** The repository is immutable, so it and the conversion service are
 registered as singletons.
